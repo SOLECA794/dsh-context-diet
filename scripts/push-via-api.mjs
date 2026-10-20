@@ -28,7 +28,9 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (!a.startsWith('--')) continue;
-    const key = a.slice(2);
+    // `--dry-run` must land on `out.dryRun`, not `out['dry-run']`. Reading the
+    // kebab key elsewhere silently turned every rehearsal into a real push.
+    const key = a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     const next = argv[i + 1];
     if (next === undefined || next.startsWith('--')) out[key] = true;
     else out[key] = argv[++i];
