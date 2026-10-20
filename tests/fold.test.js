@@ -135,6 +135,19 @@ test('routeText never touches a protected tool', () => {
   }
 })
 
+test('routeText never touches another plugin retrieval or status surface', () => {
+  // billion-context keeps a parallel content store and hands text back through
+  // `decompress`/`acp_retrieve`. Those results ARE the answer; folding one
+  // deletes the bytes the model just asked to be restored. The status panels are
+  // the same class — their value is the exact lines they print. All of them are
+  // byte contracts and must survive a replay-visible fold.
+  for (const toolName of ['decompress', 'acp_retrieve', 'acp_read_original_image', 'acp_status', 'acp_cache', 'compress', 'absorb']) {
+    const result = routeText(buildLog(), { toolName })
+    assert.equal(result.changed, false, `${toolName} must never be reduced`)
+    assert.equal(result.reducer, 'none')
+  }
+})
+
 test('routeText reduces an unknown tool by kind, and only after the floor', () => {
   // An unlisted tool is not protected — custom tools that print JSON or logs
   // still benefit. Protection is an explicit opt-in, not the default.
@@ -208,6 +221,21 @@ test('a boot log keeps the lines that state the verdict', () => {
   assert.equal(result.changed, true)
   assert.match(result.text, /VFS_BACKENDS_PASS/)
   assert.match(result.text, /M1 paging\/trap foundation OK/)
+})
+
+test('a collapsed shell result still carries the harness exit marker', () => {
+  // `[exit code: N]` is the only failure signal a shell result carries in this
+  // harness, and other plugins parse that literal. A fold that moved the code
+  // into the header EOL'd the contract: the verification ledger downstream then
+  // saw no exit code and recorded a failed run as a pass.
+  const lines = ['RUN=/mnt/d/OS-learning/kernel-project/artifacts/runs/ext2-write']
+  for (let index = 0; index < 40; index += 1) lines.push(`[blk] stat req=${index * 250} elapsed_ticks=2412`)
+  lines.push('[exit code: 1]')
+
+  const result = routeText(lines.join('\n'), { toolName: 'pwsh' })
+  assert.equal(result.changed, true)
+  assert.equal(result.reducer, 'shell-summary')
+  assert.match(result.text, /\[exit code: 1\]/u)
 })
 
 test('looksLikeCode does not mistake a build log for source', () => {

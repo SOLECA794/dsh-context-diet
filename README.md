@@ -286,11 +286,25 @@ recorded. They target different stages and can be installed together, but:
   for different reasons. That is expected, not a conflict.
 - If you enable L2, `billion-context`'s cache ledger will show the resulting prompt rewrite as
   its own miss. That is honest reporting, not a fault.
+- **Every result that comes back from `billion-context` is treated as a byte contract.**
+  `decompress`, `acp_retrieve`, `acp_read_original_image`, `acp_status`, `acp_cache` and
+  `absorb` are all in `TOOL_HINTS` with a `null` marker, so L1 never folds them. A retrieval's
+  whole purpose is to hand back exact bytes; folding it would delete the thing the model just
+  asked to be restored, and the status panels are only worth reading verbatim.
+- **The `[exit code: N]` marker survives a fold.** Measured on a 771-result session: zero shell
+  results carried `value.exitCode`, zero carried `isError: true`, and 53 carried the marker in
+  text. That literal is the only failure signal a shell result has here, and downstream tools
+  parse it — a fold that moved it into a `exit 1` header line made a failed run read as a pass.
+
+One more seam worth knowing about: `billion-context`'s `compress.absorb` is **opt-in and, as of
+0.1.202, image-only by default** (`mediaOnly: true`). Turning on `absorb.enabled` alone does
+nothing for text results — `mediaOnly` has to be set to `false` as well. Check before counting on
+it.
 
 ## Verify it yourself
 
 ```sh
-node --test tests/*.test.js     # 131 unit tests, pure functions only
+node --test tests/*.test.js     # 133 unit tests, pure functions only
 node scripts/verify-apply.mjs   # 20 checks: registers, folds, restores, byte contracts
 
 # Replay a real session through L1 and see what it would have done.

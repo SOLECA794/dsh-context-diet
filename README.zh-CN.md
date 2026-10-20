@@ -2,7 +2,7 @@
 
 给 [dsh](https://github.com/deepseek-ai/deepseek-harness) 会话做「上下文节食」：在工具结果**落地之前**整形，在**它要摧毁的缓存已经空闲时**才瘦身历史，并把三个互相矛盾的账本摊开对账。
 
-已测：131 个单测 + 20 项 `apply()` 冒烟检查（mock context）。
+已测：133 个单测 + 20 项 `apply()` 冒烟检查（mock context）。
 
 ## 它解决的问题，是「把工具结果压小」解决不了的那一半
 
@@ -214,11 +214,15 @@ audit:
 - 各自维护**独立的**节省账本，不要相加。
 - 两者都会以各自理由禁用原生 `compaction-basic` / `command-compact` / `tool-result-pruner`。这是预期行为，不是冲突。
 - 如果开了 L2，`billion-context` 的缓存账本会把由此产生的 prompt 重写记成它自己的 miss。这是诚实报告，不是故障。
+- **从 `billion-context` 回来的结果一律按字节契约处理。** `decompress`、`acp_retrieve`、`acp_read_original_image`、`acp_status`、`acp_cache`、`absorb` 都在 `TOOL_HINTS` 里带 `null` 标记，L1 永不折叠。检索的唯一目的就是把原文原样交回去；折了它等于删掉模型刚要求还原的东西，而状态面板只有逐字读才有价值。
+- **`[exit code: N]` 标记必须活过折叠。** 实测 771 条 shell 结果：0 条带 `value.exitCode`、0 条带 `isError: true`、53 条在文本里带该标记。在这个 harness 里它是 shell 结果的唯一失败信号，而且下游工具会解析这个字面量 —— 把折叠后的退出码只写进 `exit 1` 表头，会让一次失败被读成通过。
+
+还有一条值得知道的接缝：`billion-context` 的 `compress.absorb` 是**显式开启**的，且在 0.1.202 里**默认只处理图片**（`mediaOnly: true`）。只把 `absorb.enabled` 打开对纯文本结果没有任何作用 —— `mediaOnly` 必须同时设为 `false`。在指望它之前先确认这一点。
 
 ## 自己验一遍
 
 ```sh
-node --test tests/*.test.js     # 131 个单测，纯函数
+node --test tests/*.test.js     # 133 个单测，纯函数
 node scripts/verify-apply.mjs   # 20 项：注册、折叠、还原、字节契约
 ```
 
