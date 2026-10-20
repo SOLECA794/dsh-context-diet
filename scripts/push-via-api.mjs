@@ -15,6 +15,16 @@
  *
  * The remote branch must already point at `--from`; the script refuses
  * otherwise rather than force anything.
+ *
+ * A message-only change (an amended commit) has no paths to upload. Pass
+ * `--parents <--from>^` to say what the remote commit should descend from;
+ * without it the old tip stays as the parent and the amend is just a new
+ * commit on top. `--parents` needs `--force`, because it moves the branch
+ * off the history the remote currently has.
+ *
+ *   GITHUB_TOKEN=... node scripts/push-via-api.mjs \
+ *       --repo SOLECA794/dsh-cairn --from HEAD --to HEAD \
+ *       --parents HEAD^ --branch main --force
  */
 
 import { execFileSync } from 'node:child_process';
@@ -24,7 +34,7 @@ import { resolve } from 'node:path';
 const API = 'https://api.github.com';
 
 function parseArgs(argv) {
-  const out = { repo: null, from: 'HEAD~1', to: 'HEAD', branch: 'main', dryRun: false, force: false };
+  const out = { repo: null, from: 'HEAD~1', to: 'HEAD', branch: 'main', dryRun: false, force: false, parents: null };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (!a.startsWith('--')) continue;
@@ -70,6 +80,22 @@ const fromSha = git('rev-parse', args.from);
 const toSha = git('rev-parse', args.to);
 const message = git('log', '-1', '--format=%B', toSha);
 
+// The parent defaults to `--from`, which is the honest answer for a normal
+// forward push. An amended commit is a different story: its real parent is
+// `--from`'s parent, and saying so is the only way the API can express a
+// rewrite at all — it has no way to delete the old tip.
+const parents = args.parents
+  ? args.parents.split(',').map((part) => git('rev-parse', part.trim())).filter(Boolean)
+  : [fromSha];
+if (parents.length === 0) throw new Error('--parents resolved to nothing');
+const rewriting = parents[0] !== fromSha;
+if (rewriting && !args.force) {
+  throw new Error(
+    `--parents starts at ${parents[0].slice(0, 7)}, not --from ${fromSha.slice(0, 7)}. ` +
+      'That moves the branch off the remote history, so it needs --force.',
+  );
+}
+
 const remote = await call(token, 'GET', `${base}/git/ref/heads/${args.branch}`);
 if (remote.object.sha !== fromSha && !args.force) {
   throw new Error(
@@ -99,8 +125,12 @@ function modeOf(sha, path) {
 
 console.log(`pushing ${lines.length} path(s) ${fromSha.slice(0, 7)} -> ${toSha.slice(0, 7)}`);
 for (const entry of lines) console.log(`  ${entry.status} ${entry.path}`);
+if (lines.length === 0) {
+  console.log('  (message-only change: no blobs to upload, reusing the parent tree)');
+}
 if (args.dryRun) process.exit(0);
 
+const baseTree = git('rev-parse', `${fromSha}^{tree}`);
 const tree = [];
 for (const entry of lines) {
   if (entry.status === 'D') {
@@ -116,10 +146,10 @@ for (const entry of lines) {
   console.log(`  blob ${entry.path} ${blob.sha.slice(0, 7)} ${bytes.length}B`);
 }
 
-const newTree = await call(token, 'POST', `${base}/git/trees`, {
-  base_tree: git('rev-parse', `${fromSha}^{tree}`),
-  tree,
-});
+// `tree: []` is rejected with 422 "Invalid tree info" — the endpoint reads an
+// empty array as a malformed request, not as "unchanged". A message-only amend
+// has nothing to add, so it reuses the parent tree verbatim.
+const newTree = tree.length === 0 ? { sha: baseTree } : await call(token, 'POST', `${base}/git/trees`, { base_tree: baseTree, tree });
 
 // Send the committer's own offset so `adopt-remote-commit.mjs` can rebuild the
 // object without guessing which zone it was written in. The API wants ISO 8601
@@ -134,7 +164,7 @@ const author = {
 const commit = await call(token, 'POST', `${base}/git/commits`, {
   message,
   tree: newTree.sha,
-  parents: [fromSha],
+  parents,
   author,
   committer: author,
 });
