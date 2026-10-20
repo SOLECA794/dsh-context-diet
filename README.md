@@ -55,6 +55,41 @@ Two things are never touched:
   them. Same for `write`, `apply_patch`, and this plugin's own tools.
 - **Source paths matched by `noFoldForPatterns`** (`*.rs`, `*.c`, `*.h`, `*.json`, …).
 
+### The document-dump guard, and why it is the most important line here
+
+Under the PTC preset every tool call arrives as `run_code`, so the tool *name* says nothing about
+the bytes — the program chose what to print. Replaying a real PTC kernel session through an earlier
+build produced a 76.6% "saving" that was almost entirely damage:
+
+```
+40 of 45 reductions were line-numbered file content a program had printed
+480,730 of 535,523 reduced chars were that shape
+text-head/tail cut a 35,536-char signal.rs dump to 2,425 chars — the head of the file, nothing else
+```
+
+The model had asked to read those files. Cutting them to their first 2,425 characters is not
+compression, it is losing the answer. Three guards now stand in the way:
+
+1. **`isDocumentDump`** — line-numbered content (≥20 numbered lines, ≥30% of non-blank lines,
+   numbering mostly ascending) outranks every heuristic. Default action is a structural fold;
+   if no fold is possible the block stays **byte-identical**. Never head/tail.
+2. **`run_code` withholds the blind reducers** — `text-head/tail` and `shell-summary` are not
+   offered to it at all. A 700-path listing a program printed on purpose survives intact.
+3. **`log-fold` and `tabular-fold` must prove their shape** — a log needs ≥2 signal lines before
+   its middle may be dropped, and a table needs a consistent delimiter count. Without this,
+   `log-fold` degenerates into exactly the head/tail cut guard 1 exists to prevent.
+
+Same session, same 174 results, three policies:
+
+| `codeSkeleton.documentDumps` | reduced | chars saved | what happens to a source dump |
+|---|---|---|---|
+| `protect` | 1 / 47 | 6,906 (**1.3%**) | left intact |
+| `fold` (default) | 33 / 47 | 278,188 (**50.6%**) | structure kept, bodies elided, reversible |
+| `off` | 27 / 47 | 255,044 (46.4%) | truncated by `log-fold` — cheap, lossy |
+
+`fold` saves *more* than `off` and loses less. That is the whole argument for structure over
+truncation.
+
 ### The code skeleton is the part nothing else has
 
 Both reference implementations stop at a hard error here: `headroom`'s `compressCode` is disabled
@@ -163,7 +198,11 @@ Everything is optional. The knobs that matter:
 enabled: true
 minChars: 4000              # below this, no reduction is attempted
 minSavingRatio: 0.08        # a candidate must beat this fraction or is discarded
-codeSkeleton: { enabled: true, minLines: 60, maxLines: 1200 }
+codeSkeleton:
+  enabled: true
+  minLines: 60
+  maxLines: 1200
+  documentDumps: fold        # fold | protect | off — see the dump guard above
 noFoldForTools: [read, write, edit, str_replace_editor, apply_patch, ctx_restore]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
@@ -198,8 +237,12 @@ recorded. They target different stages and can be installed together, but:
 ## Verify it yourself
 
 ```sh
-node --test tests/*.test.js     # 103 unit tests, pure functions only
+node --test tests/*.test.js     # 126 unit tests, pure functions only
 node scripts/verify-apply.mjs   # 20 checks: registers, folds, restores, byte contracts
+
+# Replay a real session through L1 and see what it would have done.
+node scripts/replay-session.mjs <session.v4.jsonl.zstd> --dumps fold
+node scripts/show-fold.mjs <session.v4.jsonl.zstd> 3   # one reduction, by eye
 ```
 
 The verify script installs a resolve hook that swaps in `tests/stubs/dsh-tools.mjs` for

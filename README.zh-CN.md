@@ -2,7 +2,7 @@
 
 给 [dsh](https://github.com/deepseek-ai/deepseek-harness) 会话做「上下文节食」：在工具结果**落地之前**整形，在**它要摧毁的缓存已经空闲时**才瘦身历史，并把三个互相矛盾的账本摊开对账。
 
-已测：103 个单测 + 20 项 `apply()` 冒烟检查（mock context）。
+已测：126 个单测 + 20 项 `apply()` 冒烟检查（mock context）。
 
 ## 它解决的问题，是「把工具结果压小」解决不了的那一半
 
@@ -44,6 +44,32 @@ dsh plugin --profile <你的 profile> add dsh-context-diet
 
 - **`read` 的结果。** 它是字节契约 —— `edit` 和 `str_replace_editor` 要拿它比对。`write`、`apply_patch` 和本插件自己的工具同理。
 - **被 `noFoldForPatterns` 命中的源码路径**（`*.rs`、`*.c`、`*.h`、`*.json` …）。
+
+### 文档转储守卫 —— 这是全文件最重要的一处
+
+PTC preset 下**所有**工具调用都叫 `run_code`，工具名对内容一无所知：打什么出来是程序决定的。拿真实 PTC 内核会话回放早期版本，得到 76.6% 的"节省"，几乎全是破坏：
+
+```
+45 次削减里 40 次是程序打印出来的带行号文件内容
+535,523 个被削减字符里 480,730 是这个形状
+text-head/tail 把 35,536 字符的 signal.rs 转储砍成 2,425 字符 —— 只剩文件开头
+```
+
+那些文件是模型主动要读的。把它砍到前 2,425 个字符不是压缩，是把答案弄丢。现在三道闸门挡着：
+
+1. **`isDocumentDump`** —— 带行号内容（≥20 个编号行、≥30% 非空行、编号基本递增）的优先级高于一切启发式。默认动作是结构性折叠；折不了就**原样保留**，绝不 head/tail。
+2. **`run_code` 不给盲切 reducer** —— `text-head/tail` 和 `shell-summary` 根本不在它的候选里。程序特意打印的 700 行清单可以完整活下来。
+3. **`log-fold` 和 `tabular-fold` 必须先自证形状** —— 日志要 ≥2 条信号行才允许丢中段，表格要分隔符数量一致才允许丢行。否则 `log-fold` 会退化成第 1 条守卫要防的那种头尾截断。
+
+同一会话、同样 174 条结果，三种策略：
+
+| `codeSkeleton.documentDumps` | 削减 | 省字符 | 源码转储的遭遇 |
+|---|---|---|---|
+| `protect` | 1 / 47 | 6,906（**1.3%**） | 完整保留 |
+| `fold`（默认） | 33 / 47 | 278,188（**50.6%**） | 结构保留、函数体省略、可逆 |
+| `off` | 27 / 47 | 255,044（46.4%） | 被 `log-fold` 截断 —— 省了，但丢了 |
+
+`fold` 比 `off` 省得**更多**，丢得**更少**。这就是"结构优先于截断"的全部论据。
 
 ### 代码骨架是别人都没有的那块
 
@@ -133,7 +159,11 @@ protection = hitRate × (1 − pressure)      pressure = estimatedTokens / conte
 enabled: true
 minChars: 4000              # 小于这个长度不做任何压缩
 minSavingRatio: 0.08        # 候选方案省不到这个比例就丢弃
-codeSkeleton: { enabled: true, minLines: 60, maxLines: 1200 }
+codeSkeleton:
+  enabled: true
+  minLines: 60
+  maxLines: 1200
+  documentDumps: fold        # fold | protect | off —— 见上面的转储守卫
 noFoldForTools: [read, write, edit, str_replace_editor, apply_patch, ctx_restore]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
@@ -163,7 +193,7 @@ audit:
 ## 自己验一遍
 
 ```sh
-node --test tests/*.test.js     # 103 个单测，纯函数
+node --test tests/*.test.js     # 126 个单测，纯函数
 node scripts/verify-apply.mjs   # 20 项：注册、折叠、还原、字节契约
 ```
 
