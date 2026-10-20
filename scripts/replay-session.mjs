@@ -109,6 +109,11 @@ const byTool = new Map()
 for (const result of results) byTool.set(result.toolName, (byTool.get(result.toolName) ?? 0) + 1)
 console.log('by tool:', [...byTool.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}:${count}`).join(' '))
 
+// The denominator that matters for cost: every byte of tool output the model saw,
+// not just the blocks big enough to be worth folding.
+const totalContextChars = results.reduce((sum, result) => sum + result.text.length, 0)
+console.log(`tool output seen by the model: ${totalContextChars} chars`)
+
 /* ------------------------------------------------------------------ *
  * Replay through the real L1 code path.
  * ------------------------------------------------------------------ */
