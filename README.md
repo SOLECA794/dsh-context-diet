@@ -4,7 +4,7 @@ Context diet for [dsh](https://github.com/deepseek-ai/deepseek-harness) sessions
 results *before* they land, slim old history *only when the cache it would destroy is idle*, and
 audit the three ledgers that disagree about your hit rate.
 
-Tested: 135 unit tests, 29 `apply()` smoke checks against a mock context.
+Tested: 142 unit tests, 30 `apply()` smoke checks against a mock context.
 
 ## The problem this solves that "shrink the tool result" does not
 
@@ -289,7 +289,9 @@ codeSkeleton:
   minLines: 60
   maxLines: 1200
   documentDumps: fold        # fold | protect | off — see the dump guard above
-noFoldForTools: [read, write, edit, str_replace_editor, apply_patch, ctx_restore]
+noFoldForTools:            # byte contracts — never reshaped
+  [read, write, edit, str_replace_editor, apply_patch, ctx_restore, ctx_stats, ctx_audit,
+   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, compress, absorb]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
 history:
@@ -307,6 +309,51 @@ audit:
 
 > `audit.contextWindow` matters more than it looks: the precision ceiling and every threshold are
 > derived from it. Set it to the window your provider actually enforces, not the advertised one.
+
+## Editing the plugin without restarting DSH
+
+A restart is not free: it interrupts every live session and throws away the provider's prefix
+cache for all of them. So there are two separate problems here, and they have two separate fixes.
+
+**Loading or enabling the package is live already.** `dshmarket` can mount an installed package
+into the running process — `hotMount()` in `dshmarket/lib/hot.js` imports it and adds it to the
+live tree. It can only do that when this package's `cordis.patch.yml` parses as plain
+`- insert:` / `id:` / `name:` rows; the market's `parseSimplePatch()` returns `null` on **any**
+other row shape — a `config:` block, a disable, an expression — and then reports "restart
+required". That is why this repo's patch carries no `config:` block at all; every knob lives in
+`lib/index.js` as its shipped default, and the values are listed in the patch as comments. The
+`verify` script enforces the shape, so it cannot regress silently.
+
+**Editing the source is live too, once armed.** Create a `.dev-reload` file in the package root:
+
+```bash
+touch .dev-reload          # arms it; delete the file to disarm
+```
+
+`lib/dev-reload.js` then watches `lib/` and, on every save, re-imports the plugin and swaps the
+live instance underneath the host's fiber. Tools are released before the new ones register, so a
+reload cannot leave a duplicate `ctx_restore`.
+
+The hard part is not the watcher — it is Node's ESM cache. `import()` of the same URL returns the
+**first** module object forever, so a reload that re-imports without changing the URL reports
+success and keeps running the old code. Measured on the bundled runtime (Electron 44 / Node 24.21):
+two imports around a rewrite return the old value, `?v=n` returns the new one. So the reloader
+installs a `module.registerHooks` resolve hook that stamps `?v=<generation>` onto every module
+resolved inside `lib/` — the entry and each relative import alike, because the query belongs to
+each module's own URL.
+
+Three deliberate behaviours:
+
+- The new instance is imported **before** the old one is disposed. An edit that does not parse
+  leaves the running instance untouched and logs `reload skipped, the edit does not import`.
+- Saves are debounced 250 ms; a save during a reload queues exactly one more.
+- The hook is scoped to `file:` URLs under this package's `lib/`. `@deepseek-ai/dsh-tools` and
+  everything else resolves untouched.
+
+Three tests cover it, including one that runs a child process, edits a dependency, and asserts the
+live instance reports the **new** value — the only assertion that can tell a real reload from a
+cached no-op. Without `.dev-reload` the module returns `null` immediately: no watcher, no hook, no
+log line, one load, exactly as before.
 
 ## Coexistence with billion-context
 
@@ -337,8 +384,8 @@ it.
 ## Verify it yourself
 
 ```sh
-node --test tests/*.test.js     # 135 unit tests, pure functions only
-node scripts/verify-apply.mjs   # 25 checks: registers, folds, restores, byte contracts
+node --test tests/*.test.js     # 142 unit tests, pure functions only
+node scripts/verify-apply.mjs   # 30 checks: registers, folds, restores, byte contracts, patch shape
 
 # Replay a real session through L1 and see what it would have done.
 node scripts/replay-session.mjs <session.v4.jsonl.zstd> --dumps fold

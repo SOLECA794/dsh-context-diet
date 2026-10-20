@@ -6,3 +6,8 @@ Thumbs.db
 # Scratch output from local probes (scripts/probe-*.mjs write these).
 probe_out/
 *.tmp
+
+# Arms the development hot reloader (lib/dev-reload.js). It is a property of a
+# working copy, not of the published package: keeping it out of git is what makes
+# an installed copy load exactly once, with no watcher and no resolve hook.
+.dev-reload

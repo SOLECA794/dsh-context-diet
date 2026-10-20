@@ -1,82 +1,50 @@
 # dsh-context-diet bundle patch.
 #
-# One row, inserted after the layers it must run on top of. Every knob is
-# optional; the values here are the shipped defaults and are written out so a
-# reader can see what is on without opening lib/index.js.
+# ONE PLAIN INSERT ROW, ON PURPOSE.
+#
+# `dsh-market` can activate an installed or updated plugin in the live process
+# without a restart — `hotMount()` in `dshmarket/lib/hot.js` imports the package
+# and mounts it into the running tree. It can only do that when this file parses
+# as plain `- insert:` / `id:` / `name:` rows; its `parseSimplePatch()` returns
+# null on ANY other line (a `config:` block, a disable row, an expression) and
+# the market then falls back to "restart required".
+#
+# So every knob lives in `lib/index.js` as its shipped default, and nothing is
+# restated here. That is not a loss: the values below ARE those defaults, and
+# restating them was actively harmful — an explicit `noFoldForTools` list
+# REPLACES the built-in one instead of extending it, which silently un-protected
+# the billion-context tools (`decompress`, `compress`, `absorb`, …) whose output
+# must stay byte-exact.
+#
+# Need a non-default value? Add a `config:` block yourself — in your profile's
+# own `cordis.patch.yml`, which is where local overrides belong. Doing it here
+# is what costs you hot activation.
+#
+# Shipped defaults, for reference (all from lib/index.js):
+#
+#   enabled: true
+#   minChars: 1000            # measured elbow: 4000 reshapes 16.5% of tool
+#                             # bytes, 1000 reshapes 29.0%, 600 only 29.2%
+#   minSavingRatio: 0.08      # a reduction below this fraction is discarded
+#   minSavedChars: 400        # …and below this absolute count, which is what
+#                             # pays for the retrieval marker
+#   markerStyle: full         # 'full' prints the ctx_restore id in the marker
+#   includeErrors: false
+#   excludeTools: []
+#   noFoldForTools: read, write, edit, str_replace_editor, apply_patch,
+#                   ctx_restore, ctx_stats, ctx_audit, decompress,
+#                   acp_retrieve, acp_read_original_image, acp_status,
+#                   acp_cache, compress, absorb
+#   noFoldForPatterns: *.rs *.c *.h *.cpp *.hpp *.js *.ts *.json *.yml *.yaml *.toml
+#   codeSkeleton: { enabled: true, minLines: 60, maxLines: 1200,
+#                   documentDumps: fold }   # fold | protect | off
+#   ccr:          { enabled: true, persist: true, ttlMs: 86400000,
+#                   maxEntries: 2000 }
+#   history:      { enabled: false, strategy: auto, cacheType: auto,
+#                   protectionFloor: 0.45, protectRecentMessages: 6,
+#                   protectHeadMessages: 2, maxRewrites: 200 }
+#   audit:        { contextWindow: 512000, window: 40,
+#                   prices: { inputPerM: 1, cachedInputPerM: 0.02, outputPerM: 4 } }
 - insert:
     - id: dsh-context-diet
       name: dsh-context-diet
-      config:
-        # L1 — reshape tool results before they are materialised into the
-        # session log. This cannot invalidate a prefix: the bytes are written
-        # once, at append time.
-        enabled: true
-        # Blocks smaller than this are left alone. Measured on a real session
-        # (1.28M foldable chars): 4000 reshapes 16.5% of tool bytes, 1000
-        # reshapes 29.0%, 600 only reaches 29.2% — 1000 is the elbow. The floor
-        # used to be 4000 and the reason it was too high is that most tool
-        # results are 1–3 KB shell output, not 10 KB build logs.
-        minChars: 1000
-        # A reduction must save at least this fraction or it is thrown away.
-        minSavingRatio: 0.08
-        # …and at least this many characters, which is what pays for the
-        # retrieval marker and the risk of having to restore the block.
-        minSavedChars: 400
-
-        # Keep Rust/C/C++/make structure (imports, declarations, doc comments,
-        # error lines) and elide bodies with line-number-aligned markers, so the
-        # model can still cite `src/kernel/mm/memory_set.rs:120`.
-        codeSkeleton:
-          enabled: true
-          minLines: 60
-          maxLines: 1200
-          # What to do with a "document dump" — line-numbered file content that a
-          # program printed (what `tools.read` returns, echoed through a log).
-          #   fold    (default) fold it structurally: line numbers preserved,
-          #           bodies elided, reversible. Falls back to leaving it intact.
-          #   protect leave it byte-identical.
-          #   off     old behaviour: let the generic reducers truncate it.
-          documentDumps: fold
-
-        # `read` results are a byte contract (edit depends on them), so they are
-        # never folded. `pwsh`/`grep`/`job_output` output is fair game.
-        noFoldForTools:
-          - read
-          - write
-          - edit
-          - str_replace_editor
-          - apply_patch
-          - ctx_restore
-
-        ccr:
-          enabled: true
-          persist: true
-          # How long a retrieval id stays resolvable.
-          ttlMs: 86400000
-          maxEntries: 2000
-
-        # L2 — in-place history slimming. OFF by default: it rewrites bytes the
-        # provider has already billed and cached, so the win depends entirely on
-        # provider behaviour. Turn it on after reading `ctx_audit` once.
-        history:
-          enabled: false
-          # 'auto' picks from the observed cache behaviour:
-          #   cache-preserving (real prefix cache), balanced, aggressive (none).
-          strategy: auto
-          cacheType: auto
-          # protection = hitRate × (1 − pressure). Above this, rewriting history
-          # costs more cache than it saves tokens, so it waits.
-          protectionFloor: 0.45
-          protectRecentMessages: 6
-          protectHeadMessages: 2
-          maxRewrites: 200
-
-        audit:
-          # Must match the provider's real context window, not the advertised
-          # one: the precision ceiling is a fraction of it.
-          contextWindow: 512000
-          window: 40
-          prices:
-            inputPerM: 1
-            cachedInputPerM: 0.02
-            outputPerM: 4

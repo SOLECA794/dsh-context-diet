@@ -2,7 +2,7 @@
 
 给 [dsh](https://github.com/deepseek-ai/deepseek-harness) 会话做「上下文节食」：在工具结果**落地之前**整形，在**它要摧毁的缓存已经空闲时**才瘦身历史，并把三个互相矛盾的账本摊开对账。
 
-已测：135 个单测 + 29 项 `apply()` 冒烟检查（mock context）。
+已测：142 个单测 + 30 项 `apply()` 冒烟检查（mock context）。
 
 ## 它解决的问题，是「把工具结果压小」解决不了的那一半
 
@@ -208,7 +208,9 @@ codeSkeleton:
   minLines: 60
   maxLines: 1200
   documentDumps: fold        # fold | protect | off —— 见上面的转储守卫
-noFoldForTools: [read, write, edit, str_replace_editor, apply_patch, ctx_restore]
+noFoldForTools:             # 字节契约，永不折叠
+  [read, write, edit, str_replace_editor, apply_patch, ctx_restore, ctx_stats, ctx_audit,
+   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, compress, absorb]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
 history:
@@ -226,6 +228,30 @@ audit:
 
 > `audit.contextWindow` 比看上去重要：精度上限和每一个阈值都是从它推出来的。填上游**真正执行**的窗口，不是广告上那个。
 
+## 改插件不用重启 DSH
+
+重启不便宜：它会打断所有活着的会话，并让上游把所有会话的前缀缓存全部作废。所以这里其实是两个问题，各有各的解法。
+
+**装载 / 启用包本来就是热生效的。** `dshmarket` 能把已安装的包挂进运行中的进程 —— `dshmarket/lib/hot.js` 的 `hotMount()` 会 import 它并加进活着的树。但它只在一种情况下能这么做：本包的 `cordis.patch.yml` 必须能被解析成纯 `- insert:` / `id:` / `name:` 行。市场的 `parseSimplePatch()` 遇到**任何**别的行形状（`config:` 块、disable 行、表达式）就返回 `null`，然后报「需要重启」。这就是本仓的 patch 里**完全没有 `config:` 块**的原因：所有旋钮都在 `lib/index.js` 里作为出厂默认值存在，patch 里只以注释形式列出这些值。`verify` 脚本会校验这个形状，所以它不会悄悄退化。
+
+**改源码也是热生效的 —— 只要你把它打开。** 在包根目录建一个 `.dev-reload` 文件：
+
+```bash
+touch .dev-reload          # 打开；删掉这个文件即关闭
+```
+
+`lib/dev-reload.js` 会监听 `lib/`，每次保存就重新 import 插件，把活着的实例换在宿主的 fiber 之下。工具会先注销再重新注册，所以一次热重载不会留下重复的 `ctx_restore`。
+
+真正难的不是监听，而是 Node 的 ESM 缓存。同一个 URL 第二次 `import()` 永远返回**第一次**那个模块对象，所以「重新 import 但 URL 没变」的重载会报告成功、实际还在跑老代码。在自带运行时（Electron 44 / Node 24.21）上实测：改写文件前后两次 import 拿到旧值，加 `?v=n` 才拿到新值。所以重载器装了一个 `module.registerHooks` 解析钩子，给 `lib/` 下解析出的每个模块盖上 `?v=<代次>` —— 入口和它每一层相对 import 都会盖，因为这个 query 属于每个模块自己的 URL。
+
+三个刻意的行为：
+
+- 新实例先 import，老实例后销毁。改出语法错误时，运行中的实例原样不动，只记一行 `reload skipped, the edit does not import`。
+- 保存去抖 250 ms；重载过程中又有保存，只排队一次。
+- 钩子只作用于本包 `lib/` 下的 `file:` URL，`@deepseek-ai/dsh-tools` 和其它一切都不受影响。
+
+三个测试覆盖它，其中一个真的起子进程、改掉依赖文件、再断言活着的实例报出**新**值 —— 这是唯一能区分「真重载」和「缓存里空转」的断言。没有 `.dev-reload` 时该模块立刻返回 `null`：没有 watcher、没有钩子、没有日志，一次装载，和以前完全一样。
+
 ## 与 billion-context 共存
 
 `billion-context` 在 wire 层工作，位于请求构造**之后** —— 在代理侧折叠已经发出去的上下文。本插件在 harness 内部工作，位于结果**被记录之前**。两者目标阶段不同，可以同装，但：
@@ -241,7 +267,7 @@ audit:
 ## 自己验一遍
 
 ```sh
-node --test tests/*.test.js     # 135 个单测，纯函数
+node --test tests/*.test.js     # 142 个单测，纯函数
 node scripts/verify-apply.mjs   # 25 项：注册、折叠、还原、字节契约
 ```
 

@@ -469,6 +469,46 @@ async function main() {
     assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
   })
 
+  // ---- Packaging: the patch must stay hot-mountable ------------------------
+  // `dshmarket/lib/hot.js` `parseSimplePatch()` returns null on ANY row shape
+  // other than `- insert:` / `- id:` / `name:` — a `config:` block, a disable
+  // row, an expression — and the market then reports "restart required" for
+  // every install and every enable of this package. A `config:` block also
+  // silently REPLACES built-in defaults instead of extending them (an explicit
+  // `noFoldForTools` list dropped the billion-context tools off the byte-contract
+  // list), so the block was removed rather than merely reformatted.
+  //
+  // This mirrors the market's parser instead of importing it: the market is a
+  // profile package, not a dependency of this repo, so a test that needed it
+  // installed would pass only on one machine.
+  check('cordis.patch.yml is a plain insert row, so the market can hot-mount it', () => {
+    const text = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    const rows = []
+    let pending = null
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.replace(/#.*$/, '').trimEnd()
+      if (line.trim() === '') continue
+      if (/^-\s+insert:\s*$/.test(line)) continue
+      const id = /^\s+-\s+id:\s*(\S+)\s*$/.exec(line)
+      if (id !== null) {
+        assert.equal(pending, null, `a second id row before "${pending}" got a name`)
+        pending = id[1]
+        continue
+      }
+      const name = /^\s+name:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(line)
+      if (name !== null && pending !== null) {
+        rows.push({ id: pending, name: name[1] })
+        pending = null
+        continue
+      }
+      assert.fail(`row shape the market refuses (restart required): ${line.trim()}`)
+    }
+    assert.equal(pending, null, `id "${pending}" has no name row`)
+    assert.equal(rows.length, 1, `expected exactly one insert row, got ${rows.length}`)
+    assert.equal(rows[0].id, 'dsh-context-diet')
+    assert.equal(rows[0].name, 'dsh-context-diet')
+  })
+
   // ---- Report --------------------------------------------------------------
   let failed = 0
   for (const entry of checks) {
