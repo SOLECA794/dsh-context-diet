@@ -12,7 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { registerHooks } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -320,6 +320,21 @@ async function main() {
   // ---- Teardown must not throw --------------------------------------------
   check('the disposer runs cleanly', () => {
     if (typeof dispose === 'function') dispose()
+  })
+
+  // ---- Packaging: the peer declaration is load-bearing ---------------------
+  // Measured, not assumed: with the resolve hook above swapped out for nothing,
+  // `dsh --profile <p> --dump-config` happily prints this bundle, but booting
+  // that profile prints `failed to import: ERR_MODULE_NOT_FOUND: Cannot find
+  // package '@deepseek-ai/dsh-tools'` and the entry never activates. Adding the
+  // declaration below is what makes the harness resolve the specifier. Drop it
+  // and the plugin goes silent with no error anywhere in the UI.
+  check('package.json declares the @deepseek-ai/dsh-tools peer dependency', () => {
+    const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    const range = manifest.peerDependencies?.['@deepseek-ai/dsh-tools']
+    assert.equal(typeof range, 'string', 'peerDependencies must declare @deepseek-ai/dsh-tools')
+    assert.ok(range.trim().length > 0, 'the peer range must not be empty')
+    assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
   })
 
   // ---- Report --------------------------------------------------------------
