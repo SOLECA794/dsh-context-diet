@@ -149,6 +149,21 @@ away, so the share that actually gets billed repeatedly is smaller: measured ove
 foldable tool output accounts for **7.3% of billed prompt tokens**. Halving it removes roughly 3–4%
 of the bill. Anyone quoting the 31% as a bill saving is quoting the wrong denominator.
 
+### What still passes through, and why that is the floor
+
+Of the 385 blocks above the floor, 111 (185,000 characters, 9% of tool bytes) are still left
+byte-identical. Every one of them was checked, and they fall into three families that no reducer
+should touch:
+
+- **Curated excerpts** (13 blocks, 35,000 chars) — `=== syscall dispatch 180-265 ===` followed by
+  exactly those numbered lines. The model already asked for a *filtered* view; there is nothing
+  left to elide, so a structural fold saves under 8% and is discarded.
+- **`grep -n` over one file** (48 blocks, 76,000 chars) — every line is a match, so every line is
+  an anchor and the skeleton elides nothing. Cutting the middle would drop half the matches the
+  model asked for.
+- **Everything else** (50 blocks, 73,000 chars) — logs shorter than a reducer's own minimum, tables
+  whose separator counts disagree, prose with no structure. Each reducer refuses on purpose.
+
 ## What L2 does, and why it is gated
 
 L2 classifies old tool results into three kinds (ported from Tianshu's `agent-diet`):
