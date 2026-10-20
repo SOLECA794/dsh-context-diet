@@ -1,0 +1,218 @@
+# dsh-context-diet
+
+Context diet for [dsh](https://github.com/deepseek-ai/deepseek-harness) sessions: reshape tool
+results *before* they land, slim old history *only when the cache it would destroy is idle*, and
+audit the three ledgers that disagree about your hit rate.
+
+Tested: 103 unit tests, 20 `apply()` smoke checks against a mock context.
+
+## The problem this solves that "shrink the tool result" does not
+
+Almost every token-saving plugin answers one question: *how do I make this tool result smaller?*
+That is half the problem. The other half is that rewriting content the model has already been
+billed for **can cost more than it saves**, because it invalidates the prefix the provider was
+serving from cache. A plugin that only counts bytes saved will happily report a win while your
+invoice goes up.
+
+So this plugin is three layers with a deliberate gate between them:
+
+| Layer | Hook | What it does | Cost |
+|---|---|---|---|
+| **L1** reshape | `tools/post-execute` | Rewrites a tool result *before* it is materialised into the session log | Free — the bytes are written once, so nothing is ever invalidated |
+| **L2** slim | `agent/pre-step` | Replaces the *content* of old tool results in place | Costs a prefix rebuild, so a gate decides whether to run |
+| **L3** audit | `ctx_audit` / `ctx_stats` / `ctx_restore` | Makes every claim falsifiable and every reduction reversible | Free |
+
+L1 is on by default. L2 is off by default — turn it on after you have run `ctx_audit` once and
+seen what your provider actually does.
+
+## Install
+
+```sh
+dsh plugin --profile <name> add dsh-context-diet
+```
+
+Restart DSH afterwards. No config is required; every knob in `cordis.patch.yml` is optional and
+the file only spells out the defaults.
+
+## What L1 does
+
+`routeText` detects what kind of output arrived and applies the cheapest reducer that wins by at
+least `minSavingRatio`:
+
+| Detected | Reducer | Measured on real output |
+|---|---|---|
+| Rust/C compiler output | `log-fold` | 26,637 → 3,511 chars (**86.8%**), every `error[E0308]` and `--> file:line:col` kept |
+| `grep` / `glob` results | `search-fold` | 28,759 → 18,085 chars (**37.1%**), grouped per file, matching lines byte-identical |
+| JSON | `json-pivot` | 35,105 → 3,132 chars (**91.1%**), still valid JSON (`_keys` / `_rows` / `_omittedRows`) |
+| Test output | `test-summary` | keeps the failure lines and the counts |
+| Tabular text | `tabular-fold` | head + tail rows, per-cell cap |
+| Long prose | `text-head/tail` | head + tail only |
+| Source code | `code-skeleton` | 1,474 → 352 lines (**79.1%**) on a real kernel file |
+
+Two things are never touched:
+
+- **`read` results.** They are a byte contract — `edit` and `str_replace_editor` compare against
+  them. Same for `write`, `apply_patch`, and this plugin's own tools.
+- **Source paths matched by `noFoldForPatterns`** (`*.rs`, `*.c`, `*.h`, `*.json`, …).
+
+### The code skeleton is the part nothing else has
+
+Both reference implementations stop at a hard error here: `headroom`'s `compressCode` is disabled
+with the comment *"AST support is required"*, and Tianshu supports only ts/js/py/json/md. This
+plugin folds **Rust, C, C++, make and toml** with no parser — regex anchors plus brace-depth
+tracking — because that is the language mix of a kernel project.
+
+The elision markers are **line-number aligned**:
+
+```
+use crate::mm::{Frame, PhysAddr};
+
+/// Maps a page, returning the previous mapping.
+pub fn map_page(addr: PhysAddr) -> Result<(), MemoryError> {
+… [elided 120-133]
+
+pub fn unmap_page(addr: PhysAddr) -> Result<(), MemoryError> {
+… [elided 147-193]
+}
+```
+
+The marker carries the original line numbers, so the model can still write
+`src/kernel/mm/memory_set.rs:120` and be right. That is the whole point: the fold must not cost
+the model its aim.
+
+## What L2 does, and why it is gated
+
+L2 classifies old tool results into three kinds (ported from Tianshu's `agent-diet`):
+
+- **`redundant`** — a later `read` of the same path covers this one, so it is superseded
+- **`expired`** — the file was edited or rewritten afterwards, so the snapshot is stale
+- **`useless`** — the call failed and a retry two steps later succeeded
+
+plus three content rules: junk directory listings (`node_modules`, `__pycache__`, `.git/`…),
+all-passing test output, and duplicate searches.
+
+The invariant that keeps it safe:
+
+> **Pruning replaces message *content* in place — it never splices messages out.** Splicing shifts
+> every subsequent message index and destroys the exact-prefix cache.
+
+Whether to run at all is decided by
+
+```
+protection = hitRate × (1 − pressure)      pressure = estimatedTokens / contextWindow
+```
+
+High hit rate + low pressure → rewriting history destroys a cache that is actively paying, so it
+waits. Low hit rate → nothing is cached anyway, so it prunes freely. There is also a cold-session
+shortcut: if the provider's cache has already aged out, the rewrite is free and it runs.
+
+The three cache profiles (`cache-preserving` / `balanced` / `aggressive`) scale the
+watch/compact/reactive thresholds, clamped under a **precision ceiling** (0.7 of the window at
+512K, 0.55 at 200K) that no profile may exceed.
+
+`cacheType: auto` reads your provider's behaviour instead of trusting it:
+
+| `cached_tokens` over N requests | Verdict | Strategy chosen |
+|---|---|---|
+| ≤2 distinct values across ≥8 requests | `template` — the field is filled in, not measured | `aggressive` (nothing to protect) |
+| one value ≥90% of requests | `stuck` | `aggressive` |
+| many distinct values | `live` | `cache-preserving` |
+
+## L3: the ledger that can go negative
+
+Every lossy reduction is written to a content-addressed store (`diet:<sha256 prefix>`) and the
+marker in the transcript says how to get it back:
+
+```
+[diet: log-fold 26637→3511 chars; ctx_restore(id="diet:4f2a9c1e8b7d6a05")]
+```
+
+`ctx_restore` returns the original **byte for byte**, paged at 200 lines by default, up to 2,000.
+
+The savings ledger books a **negative** when it turns out the claim was wrong: if the model later
+reads those exact bytes in full, `observePassthrough` recognises the hash and charges
+`regretChars`, so `netChars = savedChars − regretChars` may go below zero.
+
+> A plugin that cannot report a negative saving is not measuring anything.
+
+## `ctx_audit` — the three-ledger problem
+
+`ctx_audit` reports both hit-rate definitions side by side, because they answer different
+questions and the gap between them is the signal:
+
+- **main** — only rows from the conversation's own requests
+- **billed** — every token that reached the API, including side traffic (compression summaries,
+  speculation, retries)
+
+When side traffic grows, `billed` falls while `main` stays flat. One number cannot show that; two
+can. It also reports:
+
+- `cacheSignal` — is `cached_tokens` a measurement or a template (see the table above)?
+- `monotonicity` — in an append-only session, `cacheReadTokens` should never decrease. A drop
+  means the prefix stopped matching in the *middle*, which is a different failure from idle
+  expiry and has a different fix.
+- `costUsd` / `peakCostUsd` — priced per million tokens, split by DeepSeek's peak/off-peak
+  schedule (Beijing time, weekdays 09–12 and 14–18 are peak)
+- `reconcile` — pass the provider ledger's numbers and it names whose numbers to bill against
+
+## Configuration
+
+Everything is optional. The knobs that matter:
+
+```yaml
+enabled: true
+minChars: 4000              # below this, no reduction is attempted
+minSavingRatio: 0.08        # a candidate must beat this fraction or is discarded
+codeSkeleton: { enabled: true, minLines: 60, maxLines: 1200 }
+noFoldForTools: [read, write, edit, str_replace_editor, apply_patch, ctx_restore]
+noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
+ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
+history:
+  enabled: false            # L2 off by default
+  strategy: auto            # cache-preserving | balanced | aggressive | auto
+  cacheType: auto           # exact-prefix | none | auto
+  protectionFloor: 0.45
+  protectRecentMessages: 6
+  protectHeadMessages: 2
+audit:
+  contextWindow: 512000     # must match the provider's REAL window
+  window: 40
+  prices: { inputPerM: 1, cachedInputPerM: 0.02, outputPerM: 4 }
+```
+
+> `audit.contextWindow` matters more than it looks: the precision ceiling and every threshold are
+> derived from it. Set it to the window your provider actually enforces, not the advertised one.
+
+## Coexistence with billion-context
+
+`billion-context` operates at the wire layer, *after* the request is built — it folds already-sent
+context on the proxy side. This plugin operates inside the harness, *before* the result is
+recorded. They target different stages and can be installed together, but:
+
+- They keep **separate** savings ledgers, so do not add them up.
+- Both will disable the native `compaction-basic` / `command-compact` / `tool-result-pruner` rows
+  for different reasons. That is expected, not a conflict.
+- If you enable L2, `billion-context`'s cache ledger will show the resulting prompt rewrite as
+  its own miss. That is honest reporting, not a fault.
+
+## Verify it yourself
+
+```sh
+node --test tests/*.test.js     # 103 unit tests, pure functions only
+node scripts/verify-apply.mjs   # 20 checks: registers, folds, restores, byte contracts
+```
+
+The verify script installs a resolve hook that swaps in `tests/stubs/dsh-tools.mjs` for
+`@deepseek-ai/dsh-tools` (which only exists inside a DSH install), so `apply()` is testable on a
+plain Node machine.
+
+## Credits and license
+
+Apache-2.0. Derived from the design of two projects, with no code copied verbatim — see `NOTICE`
+for the per-file attribution:
+
+- [Tianshu-harness](https://github.com/huiliyi37/Tianshu-harness) — the protection gate, cache
+  profiles, precision ceiling, warmth tracker, pricing phase, in-place pruning rules, dual hit
+  rate, cache-signal diagnosis
+- [dsh-headroom](https://github.com/giter00/dsh-headroom) — the post-execute listener shape, the
+  content-addressed store, the content-routing reducer table

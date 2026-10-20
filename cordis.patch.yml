@@ -1,0 +1,67 @@
+# dsh-context-diet bundle patch.
+#
+# One row, inserted after the layers it must run on top of. Every knob is
+# optional; the values here are the shipped defaults and are written out so a
+# reader can see what is on without opening lib/index.js.
+- insert:
+    - id: dsh-context-diet
+      name: dsh-context-diet
+      config:
+        # L1 — reshape tool results before they are materialised into the
+        # session log. This cannot invalidate a prefix: the bytes are written
+        # once, at append time.
+        enabled: true
+        minChars: 4000
+        # A reduction must save at least this fraction or it is thrown away.
+        minSavingRatio: 0.08
+
+        # Keep Rust/C/C++/make structure (imports, declarations, doc comments,
+        # error lines) and elide bodies with line-number-aligned markers, so the
+        # model can still cite `src/kernel/mm/memory_set.rs:120`.
+        codeSkeleton:
+          enabled: true
+          minLines: 60
+          maxLines: 1200
+
+        # `read` results are a byte contract (edit depends on them), so they are
+        # never folded. `pwsh`/`grep`/`job_output` output is fair game.
+        noFoldForTools:
+          - read
+          - write
+          - edit
+          - str_replace_editor
+          - apply_patch
+          - ctx_restore
+
+        ccr:
+          enabled: true
+          persist: true
+          # How long a retrieval id stays resolvable.
+          ttlMs: 86400000
+          maxEntries: 2000
+
+        # L2 — in-place history slimming. OFF by default: it rewrites bytes the
+        # provider has already billed and cached, so the win depends entirely on
+        # provider behaviour. Turn it on after reading `ctx_audit` once.
+        history:
+          enabled: false
+          # 'auto' picks from the observed cache behaviour:
+          #   cache-preserving (real prefix cache), balanced, aggressive (none).
+          strategy: auto
+          cacheType: auto
+          # protection = hitRate × (1 − pressure). Above this, rewriting history
+          # costs more cache than it saves tokens, so it waits.
+          protectionFloor: 0.45
+          protectRecentMessages: 6
+          protectHeadMessages: 2
+          maxRewrites: 200
+
+        audit:
+          # Must match the provider's real context window, not the advertised
+          # one: the precision ceiling is a fraction of it.
+          contextWindow: 512000
+          window: 40
+          prices:
+            inputPerM: 1
+            cachedInputPerM: 0.02
+            outputPerM: 4

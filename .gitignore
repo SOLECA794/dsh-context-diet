@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# Scratch output from local probes (scripts/probe-*.mjs write these).
+probe_out/
+*.tmp

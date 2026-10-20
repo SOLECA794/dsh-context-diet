@@ -1,0 +1,13 @@
+{
+  "id": "dsh-context-diet",
+  "version": "0.1.0",
+  "main": "./lib/index.js",
+  "description": "Context diet: reshapes tool results before they land, slims old history only when the cache it would destroy is idle, and audits the three ledgers that disagree about your hit rate. Reversible via ctx_restore.",
+  "engines": {
+    "dsh": ">=0.0.1-rc.5 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
+  },
+  "contributes": {
+    "tools": [],
+    "skills": []
+  }
+}

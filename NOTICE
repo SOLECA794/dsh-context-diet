@@ -1,0 +1,47 @@
+dsh-context-diet
+Copyright (c) 2026 dsh-context-diet contributors
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+This product contains code and design derived from the following
+Apache-2.0 licensed projects:
+
+  Tianshu-harness (https://github.com/huiliyi37/Tianshu-harness)
+  Copyright (c) Tianshu-harness contributors
+  Derived works:
+    - lib/policy.js
+        `protection = hitRate × (1 − pressure)` and the prune-deferral rule
+        (from src/cache/advisor.ts `shouldDelayCompact`), the three ratio
+        profiles `cache-preserving` / `balanced` / `aggressive` and the
+        `adaptiveCompactPolicyRatios` adjustment (from
+        src/compact/constants.ts), the `precisionCeilingRatio` idea (same
+        file), the `SessionWarmthTracker` cold/warm/hot prediction (from
+        src/cache/session-warmth.ts), and DeepSeek peak/off-peak phase
+        arithmetic (from src/utils/pricing-phase.ts).
+    - lib/prune.js
+        The in-place-only pruning rule and the three-rule semantic prune
+        (from src/compact/semantic-prune.ts), and the `redundant` /
+        `expired` / `useless` AgentDiet classification (from
+        src/compact/agent-diet.ts).
+    - lib/audit.js
+        The dual hit-rate accounting idea (from src/cache/billed-hit-rate.ts)
+        and the cache-monotonicity diagnostic (from src/prompt/cache-diagnostic.ts).
+
+  dsh-headroom (https://github.com/giter00/dsh-headroom)
+  Copyright (c) dsh-headroom contributors
+  Derived works:
+    - lib/fold.js
+        The content-router shape (`json-pivot`, `search-fold`, `log-fold`,
+        `tabular-fold`, shell summary, head/tail truncation) and the
+        `noFoldForTools` / `noFoldForPatterns` byte-contract guards.
+    - lib/ccr.js
+        The content-addressed reversible store with TTL, entry cap, and
+        debounced atomic writes.
+    - lib/index.js
+        The `tools/post-execute` listener shape and `defineTool` registration
+        pattern.
+
+No code was copied verbatim from the projects above; the derivations are
+re-implementations of their published mechanisms, with the algorithms and
+threshold values preserved so the behaviour can be compared.
