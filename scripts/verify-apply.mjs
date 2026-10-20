@@ -41,6 +41,41 @@ function check(label, fn) {
   }
 }
 
+/**
+ * Reject anything the harness's `snapshotJsonValue` would reject.
+ *
+ * The harness snapshots every tool value with `walkJsonValue(value, true)` and
+ * throws `tool "<name>" returned invalid output: value is not lossless JSON`
+ * when any node is not plain JSON. That check happens *after* `execute()`
+ * returns, so a unit test that only inspects the returned object cannot see it.
+ * This mirrors the rules that bite in practice: `undefined` (an absent field is
+ * not the same as a missing key), non-finite numbers, and `-0`.
+ */
+function assertLosslessJson(label, value) {
+  const walk = (node, path) => {
+    if (node === null) return
+    const type = typeof node
+    if (type === 'string' || type === 'boolean') return
+    if (type === 'number') {
+      assert.ok(Number.isFinite(node), `${label}: ${path} is a non-finite number`)
+      assert.ok(!Object.is(node, -0), `${label}: ${path} is -0`)
+      return
+    }
+    if (type === 'undefined') {
+      throw new Error(`${label}: ${path} is undefined — the harness rejects the whole result`)
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, `${path}[${index}]`))
+      return
+    }
+    assert.equal(Object.getPrototypeOf(node), Object.prototype, `${label}: ${path} is not a plain object`)
+    for (const [key, item] of Object.entries(node)) walk(item, `${path}.${key}`)
+  }
+  walk(value, 'value')
+  // The failure mode is silent, so prove the round-trip too.
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), value, `${label}: not JSON-round-trippable`)
+}
+
 function mockContext() {
   const listeners = new Map()
   const tools = []
@@ -188,6 +223,24 @@ async function main() {
       assert.equal(tail.startLine, value.totalLines)
       assert.equal(tail.more, false)
     })
+    // Regression: the store record used to omit its own `id`, so `entry.id` was
+    // `undefined` and every successful restore died in the harness snapshot with
+    // "value is not lossless JSON". The tool was unusable for the whole session.
+    check('every ctx_restore value is lossless JSON', () => {
+      assertLosslessJson('ctx_restore', value)
+      assertLosslessJson('ctx_restore', whole)
+      assertLosslessJson('ctx_restore', page)
+      assertLosslessJson('ctx_restore', tail)
+    })
+    // Regression: `store.get()` answers `null` for a miss; the tool tested for
+    // `undefined`, fell through, and threw "Cannot read properties of null
+    // (reading 'id')" instead of reporting the miss.
+    const miss = await restore.execute({ id: 'diet:0000000000000000' })
+    check('ctx_restore reports a miss instead of throwing', () => {
+      assert.equal(miss.found, false)
+      assert.equal(miss.id, 'diet:0000000000000000')
+      assertLosslessJson('ctx_restore(miss)', miss)
+    })
   } else {
     check('ctx_restore round-trip (skipped: no marker)', () => {
       throw new Error('L1 did not emit a marker, so the round-trip could not run')
@@ -203,6 +256,9 @@ async function main() {
       assert.equal(typeof value.storePath, 'string')
       assert.ok(value.storePath.includes('diet-verify-'), 'the store must be the scratch one')
     })
+    check('ctx_stats value is lossless JSON', () => {
+      assertLosslessJson('ctx_stats', value)
+    })
   }
 
   {
@@ -213,6 +269,9 @@ async function main() {
       assert.equal(value.requests, 0)
       assert.equal(typeof value.pricingPhase, 'string')
       assert.ok(Number.isFinite(value.costUsd))
+    })
+    check('ctx_audit value is lossless JSON', () => {
+      assertLosslessJson('ctx_audit', value)
     })
   }
 

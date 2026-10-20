@@ -2,7 +2,7 @@
 
 给 [dsh](https://github.com/deepseek-ai/deepseek-harness) 会话做「上下文节食」：在工具结果**落地之前**整形，在**它要摧毁的缓存已经空闲时**才瘦身历史，并把三个互相矛盾的账本摊开对账。
 
-已测：133 个单测 + 20 项 `apply()` 冒烟检查（mock context）。
+已测：135 个单测 + 25 项 `apply()` 冒烟检查（mock context）。
 
 ## 它解决的问题，是「把工具结果压小」解决不了的那一半
 
@@ -157,6 +157,8 @@ protection = hitRate × (1 − pressure)      pressure = estimatedTokens / conte
 
 `ctx_restore` **逐字节**还原原文，默认按 200 行分页，上限 2,000 行。
 
+它返回的值必须是 **lossless JSON**：harness 会对每个工具返回值做一次快照，任何一个 `undefined` 字段就够让整个结果被拒（`value is not lossless JSON`）。这里踩出过两个 bug，而只检查返回对象的单测两个都看不见：存储记录没带上自己的 `id`，于是每次成功还原都发出 `id: undefined`；未命中分支判的是 `entry === undefined`，而 `get()` 返回的是 `null`，于是还原一个过期 id 会抛 `Cannot read properties of null (reading 'id')`，而不是报告未命中。现在 `scripts/verify-apply.mjs` 会用 harness 自己的规则走一遍每个工具返回值再断言，所以这类失败不需要装 DSH 也能被测出来。
+
 当「省了」这个说法被证伪时，账本记**负数**：如果模型后来又把那段原文完整读了一遍，`observePassthrough` 会认出哈希并记入 `regretChars`，于是 `netChars = savedChars − regretChars` 可以是负的。
 
 > 报不出负数节省的插件，说明它根本没在量。
@@ -222,8 +224,8 @@ audit:
 ## 自己验一遍
 
 ```sh
-node --test tests/*.test.js     # 133 个单测，纯函数
-node scripts/verify-apply.mjs   # 20 项：注册、折叠、还原、字节契约
+node --test tests/*.test.js     # 135 个单测，纯函数
+node scripts/verify-apply.mjs   # 25 项：注册、折叠、还原、字节契约
 ```
 
 verify 脚本装了一个 resolve hook，把 `@deepseek-ai/dsh-tools`（只存在于 DSH 安装内）换成 `tests/stubs/dsh-tools.mjs`，所以普通 Node 机器上也能测 `apply()`。

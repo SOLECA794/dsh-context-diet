@@ -121,6 +121,39 @@ test('noteRestore counts retrievals without double-booking regret', () => {
   assert.equal(store.noteRestore('diet:missing'), 0)
 })
 
+test('a stored record carries its own id', () => {
+  // The record used to be keyed by id but not contain one, so `store.get(id).id`
+  // was `undefined` and `noteRestore(entry.id)` silently returned 0. A caller
+  // echoing `entry.id` back into a tool result then handed the harness an
+  // `undefined` field, which is not lossless JSON, and the whole result was
+  // rejected: "tool ctx_restore returned invalid output: value is not lossless JSON".
+  const store = makeStore()
+  const id = store.put({ toolName: 'pwsh', reducer: 'log-fold', originalText: 'q'.repeat(50), compressedChars: 5 })
+  const entry = store.get(id)
+  assert.equal(entry.id, id)
+  assert.equal(store.noteRestore(entry.id), 1, 'entry.id must address the entry it came from')
+  assert.equal(JSON.stringify(entry) === undefined, false, 'the record must be JSON-serializable')
+  assert.equal(JSON.parse(JSON.stringify(entry)).id, id, 'the id must survive a save/load round trip')
+})
+
+test('a reloaded record carries its own id', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'diet-ccr-id-'))
+  const filePath = join(dir, 'store.json')
+  const quiet = { warn() {} }
+  try {
+    const first = createStore({ filePath, logger: quiet })
+    await first.init()
+    const id = first.put({ toolName: 'pwsh', reducer: 'log-fold', originalText: 'w'.repeat(50), compressedChars: 5 })
+    await first.flush()
+
+    const second = createStore({ filePath, logger: quiet })
+    await second.init()
+    assert.equal(second.get(id)?.id, id, 'the id must be restored with the entry, not only in the map key')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('maxEntries evicts the oldest entry', () => {
   const store = makeStore({ maxEntries: 2 })
   const first = store.put({ toolName: 'a', reducer: 'r', originalText: 'a'.repeat(10), compressedChars: 1 })

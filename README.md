@@ -4,7 +4,7 @@ Context diet for [dsh](https://github.com/deepseek-ai/deepseek-harness) sessions
 results *before* they land, slim old history *only when the cache it would destroy is idle*, and
 audit the three ledgers that disagree about your hit rate.
 
-Tested: 103 unit tests, 20 `apply()` smoke checks against a mock context.
+Tested: 135 unit tests, 25 `apply()` smoke checks against a mock context.
 
 ## The problem this solves that "shrink the tool result" does not
 
@@ -213,6 +213,15 @@ marker in the transcript says how to get it back:
 
 `ctx_restore` returns the original **byte for byte**, paged at 200 lines by default, up to 2,000.
 
+Its returned value has to be *lossless JSON*, because the harness snapshots every tool value and
+rejects the whole result otherwise (`value is not lossless JSON`) — an `undefined` field is enough.
+Two bugs came out of exactly that, both invisible to unit tests that only inspect the object:
+the store record did not carry its own `id`, so every successful restore shipped `id: undefined`;
+and the miss branch tested `entry === undefined` while `get()` answers `null`, so a restore of an
+expired id threw `Cannot read properties of null (reading 'id')` instead of reporting the miss.
+`scripts/verify-apply.mjs` now walks every tool value with the harness's own rules before asserting
+on it, so this class of failure is caught without a DSH install.
+
 The savings ledger books a **negative** when it turns out the claim was wrong: if the model later
 reads those exact bytes in full, `observePassthrough` recognises the hash and charges
 `regretChars`, so `netChars = savedChars − regretChars` may go below zero.
@@ -304,8 +313,8 @@ it.
 ## Verify it yourself
 
 ```sh
-node --test tests/*.test.js     # 133 unit tests, pure functions only
-node scripts/verify-apply.mjs   # 20 checks: registers, folds, restores, byte contracts
+node --test tests/*.test.js     # 135 unit tests, pure functions only
+node scripts/verify-apply.mjs   # 25 checks: registers, folds, restores, byte contracts
 
 # Replay a real session through L1 and see what it would have done.
 node scripts/replay-session.mjs <session.v4.jsonl.zstd> --dumps fold
