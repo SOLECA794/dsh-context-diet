@@ -2,7 +2,7 @@
 
 给 [dsh](https://github.com/deepseek-ai/deepseek-harness) 会话做「上下文节食」：在工具结果**落地之前**整形，在**它要摧毁的缓存已经空闲时**才瘦身历史，并把三个互相矛盾的账本摊开对账。
 
-已测：135 个单测 + 25 项 `apply()` 冒烟检查（mock context）。
+已测：135 个单测 + 29 项 `apply()` 冒烟检查（mock context）。
 
 ## 它解决的问题，是「把工具结果压小」解决不了的那一半
 
@@ -176,6 +176,23 @@ protection = hitRate × (1 − pressure)      pressure = estimatedTokens / conte
 - `monotonicity` —— append-only 会话里 `cacheReadTokens` 不该下降。下降说明前缀在**中段**失配，这和「空闲过期」是两种不同的故障、也有不同的修法
 - `costUsd` / `peakCostUsd` —— 按百万 token 计价，并按 DeepSeek 的峰谷时段拆分（北京时间，工作日 09–12 / 14–18 为峰时）
 - `reconcile` —— 把上游账本的数字传进来，它告诉你该按谁的账结
+
+### 用量数字是从哪来的
+
+不是从 message 列表。harness 0.2.x 的 `assistant/message` 事件是
+`{ turn, step, message, usage, stream }` —— `usage` 是 `message` 的**兄弟字段**，而 `message`
+里只有 `{ role, content, source, id }`。插件如果在 `agent/pre-step` 的 `payload.messages` 里找
+`message.usage`，永远找不到：本插件当初就是这么写的，于是它在一场已经压缩了 47 次的活会话里报
+`Requests analysed: 0`。
+
+现在样本从会话日志读 —— `agent.session.snapshotEvents(from)`，和 harness 自己的 token 计量器
+用的同一个 `usageOf()` 数据源。读是增量的：每个 session 一个游标，每一步只付上次以来新增事件的成本。
+
+两个需要知道的后果：
+
+- 没有样本时 `ctx_audit` 会写 `Requests analysed: 0 (usage from none)` 和 `no usage samples yet`，
+  而不是 `0.0%`。空分母不是测出来的零。
+- 重试会把同一步重新结算一次，所以和上一条完全相同的样本会被丢掉，而不是把分母翻倍。
 
 ## 配置
 

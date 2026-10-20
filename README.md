@@ -4,7 +4,7 @@ Context diet for [dsh](https://github.com/deepseek-ai/deepseek-harness) sessions
 results *before* they land, slim old history *only when the cache it would destroy is idle*, and
 audit the three ledgers that disagree about your hit rate.
 
-Tested: 135 unit tests, 25 `apply()` smoke checks against a mock context.
+Tested: 135 unit tests, 29 `apply()` smoke checks against a mock context.
 
 ## The problem this solves that "shrink the tool result" does not
 
@@ -247,6 +247,25 @@ can. It also reports:
 - `costUsd` / `peakCostUsd` — priced per million tokens, split by DeepSeek's peak/off-peak
   schedule (Beijing time, weekdays 09–12 and 14–18 are peak)
 - `reconcile` — pass the provider ledger's numbers and it names whose numbers to bill against
+
+### Where the usage numbers come from
+
+Not from the message list. In harness 0.2.x an `assistant/message` event is
+`{ turn, step, message, usage, stream }` — `usage` is a **sibling** of `message`, and `message`
+carries only `{ role, content, source, id }`. A plugin that scans `agent/pre-step`'s
+`payload.messages` for `message.usage` finds nothing, ever: this plugin did exactly that and
+reported `Requests analysed: 0` in a live session that had 47 reductions booked in it.
+
+The samples are read from the session log instead — `agent.session.snapshotEvents(from)`, the same
+`usageOf()` source the harness's own token meter uses. The read is incremental: a cursor per
+session means each step only pays for the events appended since the last one.
+
+Two consequences worth knowing:
+
+- `ctx_audit` says `Requests analysed: 0 (usage from none)` and `no usage samples yet` rather than
+  `0.0%`. An empty denominator is not a measured zero.
+- A retried attempt re-settles the same step, so an exact repeat of the previous sample is dropped
+  instead of double-counting the denominator.
 
 ## Configuration
 

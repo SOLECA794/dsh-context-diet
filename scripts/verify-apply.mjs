@@ -376,6 +376,79 @@ async function main() {
     })
   }
 
+  // ---- Usage harvesting: the session log, not the message list -------------
+  // Measured in a live session: 47 reductions booked and `ctx_audit` still said
+  // "Requests analysed: 0". The durable `assistant/message` event keeps `usage`
+  // as a *sibling* of `message`; the message itself is only
+  // `{ role, content, source, id }`. Scanning `payload.messages` could therefore
+  // never find a sample. The fix reads the session log, which is the same source
+  // the harness's own token meter uses.
+  {
+    const audit = registered.find((tool) => tool.name === 'ctx_audit')
+    const before = await audit.execute({})
+    check('ctx_audit admits when it has no samples', () => {
+      assert.equal(before.requests, 0)
+      assert.match(before.reconcile, /no usage samples yet/)
+      // 0 requests must not be dressed up as a measured 0.0% hit rate.
+      assert.match(before.reconcile, /source: /)
+    })
+
+    const log = []
+    const session = {
+      get seq() { return log.length },
+      snapshotEvents(from = 0) { return log.slice(from) }
+    }
+    const settle = (inputTokens, cacheReadTokens, outputTokens = 100) => {
+      log.push({
+        type: 'assistant/message',
+        data: {
+          turn: 1,
+          step: log.length + 1,
+          // Deliberately the real shape: usage outside the message.
+          message: { role: 'assistant', content: [], source: {}, id: `m${log.length}` },
+          usage: { inputTokens, cacheReadTokens, outputTokens, totalTokens: inputTokens + cacheReadTokens + outputTokens }
+        }
+      })
+    }
+    settle(1000, 9000)
+    settle(1000, 9000)
+    settle(2000, 8000)
+    // A retried attempt re-settles the same numbers; it must not double-count.
+    settle(2000, 8000)
+    settle(3000, 7000)
+    settle(3000, 7000)
+
+    const agent = { id: 'verify-usage', session }
+    if (typeof preStep === 'function') {
+      await preStep({ agent, messages: [], step: 1, signal: undefined }, async () => ({ messages: [] }))
+    }
+    const after = await audit.execute({})
+    check('ctx_audit reads usage from the session log', () => {
+      assert.equal(after.usageSource, 'session-events')
+      assert.equal(after.requests, 3, 'three distinct settlements, the repeats deduped')
+      assert.ok(after.billedHitRate >= 0.8, `hitRate=${after.billedHitRate}`)
+    })
+
+    // The cursor is incremental: a second step must not re-read old events.
+    settle(4000, 6000)
+    if (typeof preStep === 'function') {
+      await preStep({ agent, messages: [], step: 2, signal: undefined }, async () => ({ messages: [] }))
+    }
+    const third = await audit.execute({})
+    check('the usage cursor advances instead of re-reading the log', () => {
+      assert.equal(third.requests, 4, 'exactly one new settlement')
+    })
+
+    // A session that cannot answer must fall back, not throw.
+    const silent = { id: 'verify-silent', session: {} }
+    if (typeof preStep === 'function') {
+      await preStep({ agent: silent, messages: [], step: 3, signal: undefined }, async () => ({ messages: [] }))
+    }
+    check('a session without snapshotEvents falls back cleanly', () => {
+      assert.equal(typeof third.requests, 'number')
+    })
+  }
+
   // ---- Teardown must not throw --------------------------------------------
   check('the disposer runs cleanly', () => {
     if (typeof dispose === 'function') dispose()
