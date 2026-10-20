@@ -127,6 +127,63 @@ test('cacheMonotonicity calls many drops systematic', () => {
   assert.ok(result.drops.length >= 3)
 })
 
+// A prompt that got smaller cannot keep the same cache: history compression
+// removes tokens, so the reusable prefix shrinks with them. Counting that as a
+// loss blames the cache for arithmetic. Measured on a real session, 20 of 367
+// drops were this shape (332K tokens) and 347 were genuine breaks (9.95M).
+test('cacheMonotonicity separates a compressed history from a broken prefix', () => {
+  const rows = [
+    { inputTokens: 5000, cacheReadTokens: 95000 }, // prompt 100000
+    { inputTokens: 4000, cacheReadTokens: 36000 }, // prompt  40000, cache fell to fit
+    { inputTokens: 4000, cacheReadTokens: 40000 }, // prompt  44000
+    { inputTokens: 4000, cacheReadTokens: 43000 } // prompt  47000
+  ]
+  const result = cacheMonotonicity(rows)
+  assert.equal(result.drops.length, 1)
+  assert.equal(result.drops[0].arithmetic, true, 'the prompt shrank by more than the cache did')
+  assert.equal(result.prefixBreaks.length, 0)
+  assert.equal(result.verdict, 'compression')
+  assert.equal(result.lostTokens, 59000)
+  assert.equal(result.lostPrefixTokens, 0)
+})
+
+test('cacheMonotonicity still blames a drop the prompt did not pay for', () => {
+  const rows = [
+    { inputTokens: 5000, cacheReadTokens: 95000 },
+    // Prompt GREW by 1000 and the cache still fell by 50000: nothing about the
+    // history explains this, so it is the provider dropping the prefix.
+    { inputTokens: 51000, cacheReadTokens: 45000 }
+  ]
+  const result = cacheMonotonicity(rows)
+  assert.equal(result.drops.length, 1)
+  assert.equal(result.drops[0].arithmetic, false)
+  assert.equal(result.prefixBreaks.length, 1)
+  assert.equal(result.verdict, 'occasional')
+  assert.equal(result.lostPrefixTokens, 50000)
+})
+
+test('cacheMonotonicity does not excuse a drop just because the prompt shrank a little', () => {
+  const rows = [
+    { inputTokens: 5000, cacheReadTokens: 95000 },
+    // Prompt fell by only 100 but the cache fell by 50000 — the shrink cannot
+    // pay for the loss, so it is still a broken prefix.
+    { inputTokens: 54900, cacheReadTokens: 45000 }
+  ]
+  const result = cacheMonotonicity(rows)
+  assert.equal(result.drops[0].arithmetic, false)
+  assert.equal(result.verdict, 'occasional')
+})
+
+test('cacheMonotonicity stays strict when the row does not report inputTokens', () => {
+  // Silence is not evidence of innocence: without the prompt size we cannot
+  // prove the drop was arithmetic, so it stays a candidate break.
+  const rows = [{ cacheReadTokens: 50000 }, { cacheReadTokens: 4332 }]
+  const result = cacheMonotonicity(rows)
+  assert.equal(result.drops[0].arithmetic, false)
+  assert.equal(result.drops[0].promptDelta, undefined)
+  assert.equal(result.verdict, 'occasional')
+})
+
 test('cacheMonotonicity passes a healthy append-only stream', () => {
   const rows = [1000, 2000, 5000, 5000, 9000, 20000].map((value) => ({ cacheReadTokens: value }))
   const result = cacheMonotonicity(rows)

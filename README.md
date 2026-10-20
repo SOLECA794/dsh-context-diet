@@ -243,7 +243,12 @@ can. It also reports:
 - `cacheSignal` — is `cached_tokens` a measurement or a template (see the table above)?
 - `monotonicity` — in an append-only session, `cacheReadTokens` should never decrease. A drop
   means the prefix stopped matching in the *middle*, which is a different failure from idle
-  expiry and has a different fix.
+  expiry and has a different fix. One cause is not a failure at all: when history is compressed
+  the prompt itself shrinks, so the reusable prefix shrinks with it. Those are reported as
+  `compression`, separately from the `prefix break`s where the prompt did not shrink and the
+  provider really did drop the prefix. On a real 1,059-request session that split was 20 drops /
+  332K tokens (compression) against 347 drops / 9.95M tokens (genuine breaks) — the two want
+  opposite fixes, so they are never added together.
 - `costUsd` / `peakCostUsd` — priced per million tokens, split by DeepSeek's peak/off-peak
   schedule (Beijing time, weekdays 09–12 and 14–18 are peak)
 - `reconcile` — pass the provider ledger's numbers and it names whose numbers to bill against

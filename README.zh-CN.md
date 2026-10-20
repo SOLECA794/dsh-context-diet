@@ -173,7 +173,7 @@ protection = hitRate × (1 − pressure)      pressure = estimatedTokens / conte
 旁路流量涨起来时，`billed` 掉而 `main` 不动。一个数字看不出这件事，两个可以。它同时报：
 
 - `cacheSignal` —— `cached_tokens` 是测量值还是模板（见上表）
-- `monotonicity` —— append-only 会话里 `cacheReadTokens` 不该下降。下降说明前缀在**中段**失配，这和「空闲过期」是两种不同的故障、也有不同的修法
+- `monotonicity` —— append-only 会话里 `cacheReadTokens` 不该下降。下降说明前缀在**中段**失配，这和「空闲过期」是两种不同的故障、也有不同的修法。但有一种下降根本不是故障：历史被压缩时 prompt 本身变小了，可复用的前缀自然跟着变小。这类单独报成 `compression`，与「prompt 没变小、上游真的丢了前缀」的 `prefix break` 分开算。一场真实的 1,059 次请求会话里这个划分是 20 次下降 / 332K token（压缩）对 347 次下降 / 9.95M token（真失配）—— 两者要的修法相反，所以从不加在一起报
 - `costUsd` / `peakCostUsd` —— 按百万 token 计价，并按 DeepSeek 的峰谷时段拆分（北京时间，工作日 09–12 / 14–18 为峰时）
 - `reconcile` —— 把上游账本的数字传进来，它告诉你该按谁的账结
 
