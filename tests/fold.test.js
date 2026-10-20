@@ -166,6 +166,59 @@ test('routeText prefers the code skeleton over byte shaving', () => {
   assert.match(result.text, /pub fn keep\(&self\) -> u32/)
 })
 
+test('a printed source excerpt is skeletonised, not shell-summarised', () => {
+  // Measured regression: `pwsh` prints a file (`grep -n`, `head -70`) far more
+  // often than it prints a build log, and `shell-summary` cut the middle out of
+  // exactly those blocks — the functions the model had asked to see. The text
+  // below is that shape: no line numbers, so nothing marks it as a document
+  // dump, and `pwsh`'s reducer list would otherwise try `shell-summary` first.
+  const lines = [
+    '//! 不依赖调度器的早期自旋锁，以及 SMP 数据结构接口预留。',
+    'use core::cell::UnsafeCell;',
+    'use core::hint::spin_loop;',
+    'pub struct SpinLock<T> {',
+    '    locked: AtomicBool,',
+    '    data: UnsafeCell<T>,',
+    '}'
+  ]
+  for (let index = 0; index < 60; index += 1) lines.push(`    let guard_${index} = self.acquire();`)
+  lines.push('impl<T> SpinLock<T> {', '    pub fn lock(&self) -> SpinLockGuard<\'_, T> {', '        self.acquire()', '    }', '}')
+
+  const result = routeText(lines.join('\n'), { toolName: 'pwsh', pathHint: 'src/klib/sync.rs' })
+  assert.equal(result.changed, true)
+  assert.equal(result.reducer, 'code-skeleton')
+  assert.match(result.text, /pub fn lock/)
+})
+
+test('a boot log keeps the lines that state the verdict', () => {
+  // The whole point of a kernel smoke run is `VFS_BACKENDS_PASS` and
+  // `M1 paging/trap foundation OK`. A plain head+tail summary kept the RUN=
+  // banner and twelve `[blk] stat` progress lines — i.e. it threw away the two
+  // lines the run existed to produce.
+  const lines = [
+    'RUN=/mnt/d/OS-learning/kernel-project/artifacts/runs/ext2-write-3e9684',
+    'TOTAL=99',
+    '[virtio-blk] slot6 base=0x10007000 magic=0x74726976 version=1 device_id=0',
+    '[virtio-blk] ready base=0x10008000 queue=64 capacity=20480 sectors (10 MiB)'
+  ]
+  for (let index = 0; index < 30; index += 1) lines.push(`[blk] stat req=${index * 250} elapsed_ticks=2412 iters=1 used=${index * 250 + 1}`)
+  lines.splice(6, 0, '[ext2] mounted /disk blocks=10240 groups=2 block_size=1024', 'VFS_BACKENDS_PASS', 'M1 paging/trap foundation OK')
+
+  const result = routeText(lines.join('\n'), { toolName: 'pwsh' })
+  assert.equal(result.changed, true)
+  assert.match(result.text, /VFS_BACKENDS_PASS/)
+  assert.match(result.text, /M1 paging\/trap foundation OK/)
+})
+
+test('looksLikeCode does not mistake a build log for source', () => {
+  assert.equal(internals.looksLikeCode(buildLog()), false)
+  assert.equal(internals.looksLikeCode('VFS_BACKENDS_PASS\nM1 paging/trap foundation OK\n[blk] stat req=0'), false)
+  assert.equal(internals.looksLikeCode(['use core::mem;', 'use core::sync;', 'fn a() {', '    let x = 1;', '    if x > 0 {', '        return;', '    }', '    let y = 2;', '}'].join('\n')), true)
+  // A handful of lines is a pasted snippet, not a region of a file; the floor
+  // keeps `shell-summary` in charge of short command output.
+  assert.equal(internals.looksLikeCode('use core::mem;\nuse core::sync;\nfn a() {}'), false)
+})
+
 test('applyReduction appends a retrievable marker', () => {
   const outcome = { changed: true, reducer: 'log-fold', text: 'x', originalChars: 1000, compressedChars: 100 }
   const full = applyReduction(outcome, 'diet:abc')
@@ -184,7 +237,57 @@ test('resolveLimits merges over defaults without mutating them', () => {
   const merged = resolveLimits({ minChars: 10 })
   assert.equal(merged.minChars, 10)
   assert.equal(merged.maxRows, FOLD_DEFAULTS.maxRows)
-  assert.equal(FOLD_DEFAULTS.minChars, 4000)
+  // The floor is a measured constant, not a taste. On `session-c1ca1479` the
+  // 4000-char floor was what capped the whole plugin at 20.6% of tool bytes:
+  // 678 foldable blocks (783,347 chars) sat under it and were never routed.
+  // Sweeping the real reducers put the knee at ~1000 (4000 → 20.6%, 1500 → 37.5%,
+  // 1000 → 40.1%, 600 → 40.9%). Changing this number without re-running that
+  // sweep is how the plugin goes back to doing nothing on pwsh output.
+  assert.equal(FOLD_DEFAULTS.minChars, 1000)
+  assert.equal(FOLD_DEFAULTS.minSavedChars, 400)
+})
+
+test('a reduction must pay for its own marker in absolute chars', () => {
+  // The ratio test alone lets a 9% win on a small block through, which is ~90
+  // chars — less than the `[diet: … ctx_restore(id="…")]` marker it appends, and
+  // less than the cost of the restore the model may then have to make.
+  const text = `prose ${'lorem ipsum '.repeat(300)}`
+  const permissive = routeText(text, {
+    toolName: 'web_fetch',
+    limits: resolveLimits({ minChars: 100, minSavedChars: 0 })
+  })
+  assert.equal(permissive.changed, true)
+  assert.ok(permissive.originalChars - permissive.compressedChars < 100000)
+
+  // Same block, same ratio, but the absolute floor is set above what it saves.
+  const strict = routeText(text, {
+    toolName: 'web_fetch',
+    limits: resolveLimits({ minChars: 100, minSavedChars: permissive.originalChars })
+  })
+  assert.equal(strict.changed, false)
+  assert.equal(strict.reducer, 'none')
+  assert.equal(strict.text, text)
+})
+
+test('every accepted reduction saves at least minSavedChars', () => {
+  // Property, not example: whatever the reducer, a claimed win must clear the
+  // absolute floor. A reducer that returns a 30-char saving on a 1200-char block
+  // is a regression even though it clears minSavingRatio in spirit.
+  const samples = [
+    { toolName: 'pwsh', text: buildLog() },
+    { toolName: 'grep', text: grepOutput() },
+    { toolName: 'pwsh', text: jsonPayload() },
+    { toolName: 'web_fetch', text: `x ${'y'.repeat(5000)}` }
+  ]
+  for (const sample of samples) {
+    const outcome = routeText(sample.text, { toolName: sample.toolName })
+    if (!outcome.changed) continue
+    const saved = outcome.originalChars - outcome.compressedChars
+    assert.ok(
+      saved >= FOLD_DEFAULTS.minSavedChars,
+      `${sample.toolName}/${outcome.reducer} saved only ${saved} chars`
+    )
+  }
 })
 
 test('internals.reduceLog keeps error lines even when includeErrors is off', () => {

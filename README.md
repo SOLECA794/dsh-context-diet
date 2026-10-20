@@ -115,6 +115,40 @@ The marker carries the original line numbers, so the model can still write
 `src/kernel/mm/memory_set.rs:120` and be right. That is the whole point: the fold must not cost
 the model its aim.
 
+### Two guards that exist because a real session broke them
+
+Both were found by replaying 1,300 recorded tool results through the reducer, not by reasoning
+about it. Both are the difference between "saves tokens" and "saves the wrong tokens".
+
+**A `pwsh` result is usually a printed file, not a shell log.** Two thirds of tool bytes come from
+`pwsh`, and a large share of that is the agent printing source (`head -70 src/klib/lock.rs`, a
+`grep -n` over a module). `shell-summary` is a head+tail cut, so it deleted exactly the functions
+the model had asked to see. Now: if the block sniffs as a source language and reads like code, the
+skeleton gets first refusal, and if the skeleton cannot be built the block stays **byte-identical**
+— the same rule the document-dump guard above already follows. Cutting the middle out of something
+the model explicitly requested is a bug even when it saves 60%.
+
+**A boot log's verdict is not noise.** A kernel smoke run is thirty lines of
+`[blk] stat req=…` progress whose entire point is one line: `VFS_BACKENDS_PASS`. A head+tail
+summary kept the banner and the last twelve progress lines and dropped the verdict. `shell-summary`
+now quotes every line that reads as a verdict (`PASS`, `FAIL`, `OK`, `DONE`, `panicked`,
+`assert`, `=== … ===`) verbatim, with its original line number.
+
+Cost of the two guards, measured on the same session: 205,000 fewer characters saved than the
+unguarded version. Worth it — the unguarded number was inflated by deleting the content the model
+had asked for.
+
+### Where the ceiling is
+
+With the floor at 1000, a real 1,300-request session goes from 404,929 characters saved to
+**620,999** (274 of 385 candidate blocks, 55.5% of the foldable bytes they hold), restore
+round-trip still exact. That is 31% of *all* tool bytes.
+
+It is not 31% of the bill. Tool output is resident in the prompt for a while and then compressed
+away, so the share that actually gets billed repeatedly is smaller: measured over the same session,
+foldable tool output accounts for **7.3% of billed prompt tokens**. Halving it removes roughly 3–4%
+of the bill. Anyone quoting the 31% as a bill saving is quoting the wrong denominator.
+
 ## What L2 does, and why it is gated
 
 L2 classifies old tool results into three kinds (ported from Tianshu's `agent-diet`):
@@ -196,8 +230,12 @@ Everything is optional. The knobs that matter:
 
 ```yaml
 enabled: true
-minChars: 4000              # below this, no reduction is attempted
+# 1000, not 4000: measured on a real session, 4000 reshaped 16.5% of tool bytes
+# and 1000 reshapes 31% — most tool results are 1–3 KB shell output, not 10 KB
+# build logs. Below ~600 the curve is flat.
+minChars: 1000
 minSavingRatio: 0.08        # a candidate must beat this fraction or is discarded
+minSavedChars: 400          # …and save at least this many characters outright
 codeSkeleton:
   enabled: true
   minLines: 60
@@ -237,7 +275,7 @@ recorded. They target different stages and can be installed together, but:
 ## Verify it yourself
 
 ```sh
-node --test tests/*.test.js     # 126 unit tests, pure functions only
+node --test tests/*.test.js     # 131 unit tests, pure functions only
 node scripts/verify-apply.mjs   # 20 checks: registers, folds, restores, byte contracts
 
 # Replay a real session through L1 and see what it would have done.
