@@ -291,7 +291,8 @@ codeSkeleton:
   documentDumps: fold        # fold | protect | off — see the dump guard above
 noFoldForTools:            # byte contracts — never reshaped
   [read, write, edit, str_replace_editor, apply_patch, ctx_restore, ctx_stats, ctx_audit,
-   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, compress, absorb]
+   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, acp_rule,
+   search_context, compress, absorb]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
 history:
@@ -367,10 +368,14 @@ recorded. They target different stages and can be installed together, but:
 - If you enable L2, `billion-context`'s cache ledger will show the resulting prompt rewrite as
   its own miss. That is honest reporting, not a fault.
 - **Every result that comes back from `billion-context` is treated as a byte contract.**
-  `decompress`, `acp_retrieve`, `acp_read_original_image`, `acp_status`, `acp_cache` and
-  `absorb` are all in `TOOL_HINTS` with a `null` marker, so L1 never folds them. A retrieval's
-  whole purpose is to hand back exact bytes; folding it would delete the thing the model just
-  asked to be restored, and the status panels are only worth reading verbatim.
+  `decompress`, `acp_retrieve`, `acp_read_original_image`, `acp_status`, `acp_cache`, `acp_rule`,
+  `search_context`, `compress` and `absorb` are all in `TOOL_HINTS` with a `null` marker, so L1
+  never folds them. A retrieval's whole purpose is to hand back exact bytes; folding it would
+  delete the thing the model just asked to be restored, and the status panels are only worth
+  reading verbatim. The list is every tool `billion-context` registers except `run_code`, which
+  keeps reducers that preserve meaning. `search_context` and `acp_rule` were missing from the
+  first pass and fell through to kind detection — a gap that stayed invisible because neither
+  result is usually long enough to appear in a replay.
 - **The `[exit code: N]` marker survives a fold.** Measured on a 771-result session: zero shell
   results carried `value.exitCode`, zero carried `isError: true`, and 53 carried the marker in
   text. That literal is the only failure signal a shell result has here, and downstream tools

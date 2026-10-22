@@ -141,7 +141,24 @@ test('routeText never touches another plugin retrieval or status surface', () =>
   // deletes the bytes the model just asked to be restored. The status panels are
   // the same class — their value is the exact lines they print. All of them are
   // byte contracts and must survive a replay-visible fold.
-  for (const toolName of ['decompress', 'acp_retrieve', 'acp_read_original_image', 'acp_status', 'acp_cache', 'compress', 'absorb']) {
+  //
+  // This list is every tool billion-context registers except `run_code`, which is
+  // handled above with reducers that preserve meaning. `search_context` and
+  // `acp_rule` were missing from the first pass: search hits are the fragments
+  // the model is about to act on, and `acp_rule` prints the standing rules
+  // verbatim. Neither is long often enough to surface in a replay, so the gap
+  // was silent.
+  for (const toolName of [
+    'decompress',
+    'acp_retrieve',
+    'acp_read_original_image',
+    'acp_status',
+    'acp_cache',
+    'acp_rule',
+    'search_context',
+    'compress',
+    'absorb'
+  ]) {
     const result = routeText(buildLog(), { toolName })
     assert.equal(result.changed, false, `${toolName} must never be reduced`)
     assert.equal(result.reducer, 'none')

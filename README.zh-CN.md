@@ -210,7 +210,8 @@ codeSkeleton:
   documentDumps: fold        # fold | protect | off —— 见上面的转储守卫
 noFoldForTools:             # 字节契约，永不折叠
   [read, write, edit, str_replace_editor, apply_patch, ctx_restore, ctx_stats, ctx_audit,
-   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, compress, absorb]
+   decompress, acp_retrieve, acp_read_original_image, acp_status, acp_cache, acp_rule,
+   search_context, compress, absorb]
 noFoldForPatterns: ['*.rs', '*.c', '*.h', '*.cpp', '*.js', '*.ts', '*.json', '*.toml']
 ccr: { enabled: true, persist: true, ttlMs: 86400000, maxEntries: 2000 }
 history:
@@ -259,7 +260,7 @@ touch .dev-reload          # 打开；删掉这个文件即关闭
 - 各自维护**独立的**节省账本，不要相加。
 - 两者都会以各自理由禁用原生 `compaction-basic` / `command-compact` / `tool-result-pruner`。这是预期行为，不是冲突。
 - 如果开了 L2，`billion-context` 的缓存账本会把由此产生的 prompt 重写记成它自己的 miss。这是诚实报告，不是故障。
-- **从 `billion-context` 回来的结果一律按字节契约处理。** `decompress`、`acp_retrieve`、`acp_read_original_image`、`acp_status`、`acp_cache`、`absorb` 都在 `TOOL_HINTS` 里带 `null` 标记，L1 永不折叠。检索的唯一目的就是把原文原样交回去；折了它等于删掉模型刚要求还原的东西，而状态面板只有逐字读才有价值。
+- **从 `billion-context` 回来的结果一律按字节契约处理。** `decompress`、`acp_retrieve`、`acp_read_original_image`、`acp_status`、`acp_cache`、`acp_rule`、`search_context`、`compress`、`absorb` 都在 `TOOL_HINTS` 里带 `null` 标记，L1 永不折叠。检索的唯一目的就是把原文原样交回去；折了它等于删掉模型刚要求还原的东西，而状态面板只有逐字读才有价值。这份名单是 `billion-context` 注册的全部工具（`run_code` 除外，它保留有意义的 reducer）。`search_context` 和 `acp_rule` 在第一版里漏了，落到按 kind 探测——之所以一直没暴露，是因为这两种结果通常都不够长，重放里根本看不到。
 - **`[exit code: N]` 标记必须活过折叠。** 实测 771 条 shell 结果：0 条带 `value.exitCode`、0 条带 `isError: true`、53 条在文本里带该标记。在这个 harness 里它是 shell 结果的唯一失败信号，而且下游工具会解析这个字面量 —— 把折叠后的退出码只写进 `exit 1` 表头，会让一次失败被读成通过。
 
 还有一条值得知道的接缝：`billion-context` 的 `compress.absorb` 是**显式开启**的，且在 0.1.202 里**默认只处理图片**（`mediaOnly: true`）。只把 `absorb.enabled` 打开对纯文本结果没有任何作用 —— `mediaOnly` 必须同时设为 `false`。在指望它之前先确认这一点。
